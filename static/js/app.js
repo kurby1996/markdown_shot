@@ -1,40 +1,48 @@
-// App State & Core Logic
+// Markdown Video Course Note Assistant - WYSIWYG Visual Editor (Youdao / Typora style)
 const App = {
   state: {
     config: {},
     hotkeyStatus: {},
     targetMdPath: '',
     imageSaveDir: '',
-    captures: [],
-    markdownContent: '',
-    activeDocTab: 'preview', // 'preview' or 'source'
     theme: localStorage.getItem('md_snip_theme') || 'dark',
-    activeSettingsTab: 'target',
+    activeSettingsTab: 'hotkey',
     recordingAction: null,
-    recordedKeys: [],
-    isSavingDoc: false,
-    autoScrollBottom: true,
+    isSaving: false,
+    autoSaveTimer: null,
+    lastSavedMarkdown: '',
     zoomImageSrc: null,
-    showSettingsModal: false,
-    showNewFileModal: false,
-    newFileTitle: '',
-    newFilePath: ''
+    turndownService: null
   },
 
   init() {
+    this.initTurndown();
     this.applyTheme(this.state.theme);
     this.bindDOMEvents();
     this.fetchConfig();
     this.fetchMarkdown();
-    this.fetchCaptures();
     this.initSSE();
-    
-    // Auto sync markdown periodically
-    setInterval(() => {
-      if (this.state.activeDocTab === 'preview') {
-        this.fetchMarkdown(true);
-      }
-    }, 4000);
+  },
+
+  initTurndown() {
+    if (window.TurndownService) {
+      this.state.turndownService = new TurndownService({
+        headingStyle: 'atx',
+        hr: '---',
+        bulletListMarker: '-',
+        codeBlockStyle: 'fenced'
+      });
+
+      // Custom rule for images with data-rel-src
+      this.state.turndownService.addRule('customImage', {
+        filter: 'img',
+        replacement: function (content, node) {
+          const relSrc = node.getAttribute('data-rel-src') || node.getAttribute('src') || '';
+          const alt = node.getAttribute('alt') || '';
+          return `\n\n![${alt}](${relSrc})\n\n`;
+        }
+      });
+    }
   },
 
   applyTheme(theme) {
@@ -86,33 +94,23 @@ const App = {
     }
   },
 
-  async fetchMarkdown(silent = false) {
+  async fetchMarkdown(silent = false, scrollToBottom = false) {
     try {
       const res = await fetch('/api/markdown');
       const data = await res.json();
       if (data.status === 'ok') {
-        // Only update if source tab is not dirty or in preview mode
-        if (this.state.activeDocTab === 'preview' || this.state.markdownContent === '') {
-          this.state.markdownContent = data.content;
-          this.renderMarkdownView();
+        const mdText = data.content || '';
+        
+        // Only re-render if content changed on disk or first load
+        if (mdText !== this.state.lastSavedMarkdown || this.state.lastSavedMarkdown === '') {
+          this.state.lastSavedMarkdown = mdText;
+          this.renderMarkdownToVisualEditor(mdText, scrollToBottom);
         }
-        document.getElementById('doc-screenshot-count').textContent = `${data.screenshot_count} 张截图`;
+        
+        this.updateStats();
       }
     } catch (e) {
       if (!silent) console.error('Fetch markdown failed', e);
-    }
-  },
-
-  async fetchCaptures() {
-    try {
-      const res = await fetch('/api/captures?limit=30');
-      const data = await res.json();
-      if (data.status === 'ok') {
-        this.state.captures = data.captures;
-        this.renderCaptureFeed();
-      }
-    } catch (e) {
-      console.error('Fetch captures failed', e);
     }
   },
 
@@ -123,9 +121,11 @@ const App = {
         try {
           const payload = JSON.parse(event.data);
           if (payload.type === 'screenshot_added') {
-            this.showToast(`📸 截图已成功追加到 MD 文档`, 'success');
-            this.fetchCaptures();
-            this.fetchMarkdown();
+            const captureData = payload.data;
+            this.showToast(`📸 截图已直接插入到文档中`, 'success');
+            
+            // Insert image element directly into WYSIWYG editor
+            this.insertScreenshotElement(captureData.rel_path, captureData.filename);
           } else if (payload.type === 'error') {
             this.showToast(`错误: ${payload.data.message}`, 'error');
           }
@@ -133,11 +133,9 @@ const App = {
           console.error('SSE parse error', err);
         }
       };
-      sse.onerror = () => {
-        // SSE will reconnect automatically
-      };
+      sse.onerror = () => {};
     } catch (e) {
-      console.warn('SSE not supported or failed', e);
+      console.warn('SSE not supported', e);
     }
   },
 
@@ -150,13 +148,13 @@ const App = {
     }
 
     const hotkeys = this.state.config.hotkeys || {};
-    const hotkeyText = `选区: ${hotkeys.snip_region || '无'} | 全屏: ${hotkeys.snip_fullscreen || '无'} | 窗口: ${hotkeys.snip_active_window || '无'}`;
+    const hotkeyText = `选区: ${hotkeys.snip_region || 'Alt+Q'} | 全屏: ${hotkeys.snip_fullscreen || 'F9'}`;
     const hotkeyEl = document.getElementById('header-hotkeys-text');
     if (hotkeyEl) {
       hotkeyEl.textContent = hotkeyText;
     }
 
-    // Populate recent files dropdown on top bar
+    // Populate recent files dropdown
     const recentSelect = document.getElementById('recent-files-select');
     if (recentSelect && this.state.config.recent_files) {
       let opts = '<option value="">🕒 快速切换最近文档...</option>';
@@ -169,151 +167,250 @@ const App = {
     }
   },
 
-  renderCaptureFeed() {
-    const feed = document.getElementById('capture-feed');
-    if (!feed) return;
+  // Markdown -> HTML into Visual ContentEditable Canvas
+  renderMarkdownToVisualEditor(rawMd, scrollToBottom = false) {
+    const editor = document.getElementById('wysiwyg-editor');
+    if (!editor) return;
 
-    if (!this.state.captures || this.state.captures.length === 0) {
-      feed.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon">🖼️</div>
-          <p style="font-weight: 600;">暂无截图记录</p>
-          <p style="font-size: 13px;">按下快捷键 <span class="key-badge">${this.state.config.hotkeys?.snip_region || 'Alt+Q'}</span> 即可开始截取视频画面并自动追加到 Markdown！</p>
-        </div>
-      `;
+    const container = document.getElementById('wysiwyg-scroll-container');
+    const prevScrollTop = container ? container.scrollTop : 0;
+
+    let html = '';
+    if (window.marked) {
+      const renderer = new marked.Renderer();
+      renderer.image = function (href, title, text) {
+        const src = typeof href === 'object' ? href.href : href;
+        const alt = typeof href === 'object' ? (href.text || '') : (text || '');
+        const imgTitle = typeof href === 'object' ? (href.title || '') : (title || '');
+        
+        let previewSrc = src;
+        if (src && !src.startsWith('http://') && !src.startsWith('https://') && !src.startsWith('data:')) {
+          previewSrc = `/api/image-preview?path=${encodeURIComponent(src)}`;
+        }
+        return `<p><img src="${previewSrc}" data-rel-src="${src}" alt="${alt}" title="${imgTitle}" onclick="App.zoomImage('${previewSrc}')" /></p>`;
+      };
+      marked.setOptions({ renderer: renderer, breaks: true, gfm: true });
+      html = marked.parse(rawMd);
+    } else {
+      html = rawMd.replace(/\n/g, '<br/>');
+    }
+
+    editor.innerHTML = html || '<p><br></p>';
+
+    if (container) {
+      if (scrollToBottom) {
+        setTimeout(() => {
+          container.scrollTop = container.scrollHeight;
+        }, 50);
+      } else if (prevScrollTop > 0) {
+        container.scrollTop = prevScrollTop;
+      }
+    }
+
+    this.updateStats();
+  },
+
+  // Directly insert screenshot into WYSIWYG editor
+  insertScreenshotElement(relPath, filename) {
+    const editor = document.getElementById('wysiwyg-editor');
+    if (!editor) return;
+
+    const previewSrc = `/api/image-preview?path=${encodeURIComponent(relPath)}`;
+
+    // Create image element block
+    const imgP = document.createElement('p');
+    const img = document.createElement('img');
+    img.src = previewSrc;
+    img.setAttribute('data-rel-src', relPath);
+    img.alt = filename;
+    img.onclick = () => App.zoomImage(previewSrc);
+    imgP.appendChild(img);
+
+    // Empty paragraph after image for immediate typing
+    const nextP = document.createElement('p');
+    nextP.innerHTML = '<br>';
+
+    editor.appendChild(imgP);
+    editor.appendChild(nextP);
+
+    // Smoothly scroll down
+    const container = document.getElementById('wysiwyg-scroll-container');
+    if (container) {
+      setTimeout(() => {
+        container.scrollTop = container.scrollHeight;
+      }, 50);
+    }
+
+    // Set cursor to the empty paragraph right below the new image
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(nextP, 0);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    editor.focus();
+
+    // Auto save
+    this.saveMarkdownContent(true);
+    this.updateStats();
+  },
+
+  // Convert HTML from ContentEditable back to standard clean Markdown
+  htmlToMarkdown(html) {
+    if (this.state.turndownService) {
+      try {
+        return this.state.turndownService.turndown(html);
+      } catch (e) {
+        console.warn('Turndown error, using fallback:', e);
+      }
+    }
+
+    // Robust Fallback Converter
+    const div = document.createElement('div');
+    div.innerHTML = html;
+
+    let md = '';
+    const walk = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return node.textContent;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+      const tag = node.tagName.toLowerCase();
+      let children = '';
+      node.childNodes.forEach(child => {
+        children += walk(child);
+      });
+
+      switch (tag) {
+        case 'h1': return `\n# ${children.trim()}\n\n`;
+        case 'h2': return `\n## ${children.trim()}\n\n`;
+        case 'h3': return `\n### ${children.trim()}\n\n`;
+        case 'h4': return `\n#### ${children.trim()}\n\n`;
+        case 'p': return `${children.trim()}\n\n`;
+        case 'strong': case 'b': return `**${children}**`;
+        case 'em': case 'i': return `*${children}*`;
+        case 'strike': case 's': case 'del': return `~~${children}~~`;
+        case 'code': return `\`${children}\``;
+        case 'pre': return `\n\`\`\`\n${children.trim()}\n\`\`\`\n\n`;
+        case 'blockquote': return `\n> ${children.trim()}\n\n`;
+        case 'li': return `- ${children.trim()}\n`;
+        case 'ul': case 'ol': return `\n${children}\n`;
+        case 'hr': return `\n---\n\n`;
+        case 'br': return `\n`;
+        case 'img': {
+          const rel = node.getAttribute('data-rel-src') || node.getAttribute('src') || '';
+          const alt = node.getAttribute('alt') || '';
+          return `\n\n![${alt}](${rel})\n\n`;
+        }
+        default: return children;
+      }
+    };
+
+    return walk(div).trim() + '\n';
+  },
+
+  onEditorInput() {
+    this.updateStats();
+
+    // Mark as saving in progress
+    const toolbarSave = document.getElementById('toolbar-auto-save');
+    const toolbarText = document.getElementById('toolbar-save-text');
+    if (toolbarSave && toolbarText) {
+      toolbarSave.className = 'auto-save-indicator saving';
+      toolbarText.textContent = '正在保存...';
+    }
+
+    const statusEl = document.getElementById('stat-save-status');
+    if (statusEl) {
+      statusEl.className = 'save-status-saving';
+      statusEl.textContent = '● 正在保存...';
+    }
+
+    // Debounced Auto-save (600ms of typing inactivity)
+    clearTimeout(this.state.autoSaveTimer);
+    this.state.autoSaveTimer = setTimeout(() => {
+      this.saveMarkdownContent(true);
+    }, 600);
+  },
+
+  async saveMarkdownContent(isAutoSave = false) {
+    const editor = document.getElementById('wysiwyg-editor');
+    if (!editor) return;
+
+    const html = editor.innerHTML;
+    const mdContent = this.htmlToMarkdown(html);
+
+    if (isAutoSave && mdContent === this.state.lastSavedMarkdown) {
+      // Content unchanged
+      this.updateAutoSaveStatusSaved();
       return;
     }
 
-    feed.innerHTML = this.state.captures.map((item, idx) => {
-      const previewUrl = `/api/image-preview?path=${encodeURIComponent(item.rel_path)}`;
-      return `
-        <div class="capture-card" data-filename="${item.filename}">
-          <div class="card-img-wrapper" onclick="App.zoomImage('${previewUrl}')">
-            <img src="${previewUrl}" alt="${item.filename}" loading="lazy" />
-            <div class="img-badge-info">${item.dimensions || ''} · ${item.size || ''}</div>
-          </div>
-          <div class="card-body">
-            <div class="card-meta">
-              <span style="font-weight: 600; color: var(--accent-light);">#${this.state.captures.length - idx} ${item.filename}</span>
-              <span>🕒 ${item.timestamp}</span>
-            </div>
-            <div class="card-note-box">
-              <input type="text" class="card-note-input" placeholder="输入备注并回车更新..." value="${item.note || ''}" onkeydown="if(event.key==='Enter') App.updateNote('${item.filename}', this.value)" />
-              <button class="btn btn-secondary btn-sm" onclick="App.updateNote('${item.filename}', this.previousElementSibling.value)">💾 备注</button>
-            </div>
-            <div class="card-actions">
-              <button class="btn btn-secondary btn-sm" onclick="App.copyMarkdownLink('${item.rel_path}', '${item.filename}')" title="复制 Markdown 引用链接">📋 复制链接</button>
-              <button class="btn btn-secondary btn-sm" onclick="App.openInFolder('image', '${item.abs_path}')" title="在文件夹中显示图片">📂 文件夹</button>
-            </div>
-          </div>
-        </div>
-      `;
-    }).join('');
-  },
-
-  renderMarkdownView() {
-    const previewContainer = document.getElementById('markdown-preview');
-    const editorTextarea = document.getElementById('markdown-editor');
-
-    if (editorTextarea) {
-      editorTextarea.value = this.state.markdownContent;
-    }
-
-    if (previewContainer) {
-      // Process custom image preview urls in markdown
-      let rawMd = this.state.markdownContent;
-      
-      // Parse markdown with marked
-      let html = '';
-      if (window.marked) {
-        // Custom image renderer for marked
-        const renderer = new marked.Renderer();
-        renderer.image = function(href, title, text) {
-          // Check if marked passed an object (marked v4+) or string
-          const src = typeof href === 'object' ? href.href : href;
-          const alt = typeof href === 'object' ? (href.text || '') : (text || '');
-          const imgTitle = typeof href === 'object' ? (href.title || '') : (title || '');
-          
-          let previewSrc = src;
-          if (src && !src.startsWith('http://') && !src.startsWith('https://') && !src.startsWith('data:')) {
-            previewSrc = `/api/image-preview?path=${encodeURIComponent(src)}`;
-          }
-          return `<div class="img-render-container"><img src="${previewSrc}" alt="${alt}" title="${imgTitle}" onclick="App.zoomImage('${previewSrc}')" loading="lazy" /></div>`;
-        };
-        marked.setOptions({ renderer: renderer, breaks: true, gfm: true });
-        html = marked.parse(rawMd);
-      } else {
-        // Simple fallback parser
-        html = rawMd.replace(/\n/g, '<br/>');
-      }
-
-      previewContainer.innerHTML = html;
-
-      if (this.state.autoScrollBottom && this.state.activeDocTab === 'preview') {
-        const docView = document.getElementById('doc-view-container');
-        if (docView) {
-          docView.scrollTop = docView.scrollHeight;
-        }
-      }
-    }
-  },
-
-  switchDocTab(tab) {
-    this.state.activeDocTab = tab;
-    document.getElementById('tab-preview-btn').classList.toggle('active', tab === 'preview');
-    document.getElementById('tab-source-btn').classList.toggle('active', tab === 'source');
-    
-    document.getElementById('markdown-preview').style.display = tab === 'preview' ? 'block' : 'none';
-    document.getElementById('markdown-editor-wrapper').style.display = tab === 'source' ? 'block' : 'none';
-
-    if (tab === 'preview') {
-      this.state.markdownContent = document.getElementById('markdown-editor').value;
-      this.renderMarkdownView();
-    }
-  },
-
-  async saveMarkdownContent() {
-    const editor = document.getElementById('markdown-editor');
-    const content = editor.value;
     try {
       const res = await fetch('/api/markdown', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content })
+        body: JSON.stringify({ content: mdContent })
       });
       const data = await res.json();
       if (data.status === 'ok') {
-        this.state.markdownContent = content;
-        this.showToast('Markdown 文档已保存', 'success');
-        this.renderMarkdownView();
+        this.state.lastSavedMarkdown = mdContent;
+        this.updateAutoSaveStatusSaved();
+        if (!isAutoSave) {
+          this.showToast('文档已同步保存到 Markdown 文件', 'success');
+        }
+        this.updateStats();
       } else {
-        this.showToast(data.message || '保存失败', 'error');
+        if (!isAutoSave) this.showToast(data.message || '保存失败', 'error');
       }
     } catch (e) {
-      this.showToast('保存失败: ' + e, 'error');
+      if (!isAutoSave) this.showToast('保存出错: ' + e, 'error');
     }
+  },
+
+  updateAutoSaveStatusSaved() {
+    const toolbarSave = document.getElementById('toolbar-auto-save');
+    const toolbarText = document.getElementById('toolbar-save-text');
+    if (toolbarSave && toolbarText) {
+      toolbarSave.className = 'auto-save-indicator saved';
+      toolbarText.textContent = '实时已自动保存';
+    }
+
+    const statusEl = document.getElementById('stat-save-status');
+    if (statusEl) {
+      statusEl.className = 'save-status-saved';
+      statusEl.textContent = '● 实时已自动保存';
+    }
+  },
+
+  updateStats() {
+    const editor = document.getElementById('wysiwyg-editor');
+    if (!editor) return;
+
+    const text = editor.innerText || '';
+    const charCount = text.replace(/\s/g, '').length;
+    const imgCount = editor.querySelectorAll('img').length;
+
+    const statWords = document.getElementById('stat-words');
+    if (statWords) statWords.textContent = `字符: ${charCount}`;
+
+    const statScreenshots = document.getElementById('stat-screenshots');
+    if (statScreenshots) statScreenshots.textContent = `📸 截图: ${imgCount} 张`;
   },
 
   async triggerCapture(type) {
     try {
-      const note = document.getElementById('quick-note-text')?.value || '';
-      let url = `/api/capture/${type}`;
-      this.showToast(`正在启动${type === 'region' ? '选区截图' : type === 'fullscreen' ? '全屏截图' : '窗口截图'}...`, 'info');
-      
-      const res = await fetch(url, {
+      this.showToast(`正在启动${type === 'region' ? '选区截图 (Alt+Q)' : '全屏秒截 (F9)'}...`, 'info');
+      const res = await fetch(`/api/capture/${type}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note })
+        body: JSON.stringify({ note: '' })
       });
       const data = await res.json();
       if (data.status === 'ok') {
         if (type !== 'region') {
-          this.showToast('截图已完成并存入 Markdown', 'success');
-          if (document.getElementById('quick-note-text')) {
-            document.getElementById('quick-note-text').value = '';
-          }
-          this.fetchCaptures();
-          this.fetchMarkdown();
+          this.showToast('截图已完成并插入文档', 'success');
         }
       } else {
         this.showToast(data.message || '截图失败', 'error');
@@ -323,36 +420,16 @@ const App = {
     }
   },
 
-  async updateNote(filename, note) {
-    try {
-      const res = await fetch('/api/capture/update-note', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename, note })
-      });
-      const data = await res.json();
-      if (data.status === 'ok') {
-        this.showToast('备注已同步更新到 Markdown 文档', 'success');
-        this.fetchMarkdown();
-        this.fetchCaptures();
-      } else {
-        this.showToast(data.message || '更新备注失败', 'error');
-      }
-    } catch (e) {
-      this.showToast('网络错误: ' + e, 'error');
-    }
-  },
-
   async pickTargetFile() {
     try {
-      this.showToast('正在打开系统文件选择窗口...', 'info');
+      this.showToast('正在打开系统文件选择弹窗...', 'info');
       const res = await fetch('/api/file/pick', { method: 'POST' });
       const data = await res.json();
       if (data.status === 'ok') {
         this.state.targetMdPath = data.path;
+        this.state.lastSavedMarkdown = '';
         this.fetchConfig();
         this.fetchMarkdown();
-        this.fetchCaptures();
         this.showToast(`已切换目标文档: ${data.filename}`, 'success');
       }
     } catch (e) {
@@ -362,16 +439,41 @@ const App = {
 
   async pickImageDir() {
     try {
-      this.showToast('正在打开系统目录选择窗口...', 'info');
+      this.showToast('正在打开系统目录选择弹窗...', 'info');
       const res = await fetch('/api/file/pick-dir', { method: 'POST' });
       const data = await res.json();
       if (data.status === 'ok') {
         this.state.imageSaveDir = data.path;
-        document.getElementById('cfg-custom-img-folder').value = data.path;
-        this.showToast(`已设置图片目录: ${data.path}`, 'success');
+        const customField = document.getElementById('cfg-custom-img-folder');
+        if (customField) customField.value = data.path;
+        this.showToast(`已设置图片存放目录: ${data.path}`, 'success');
       }
     } catch (e) {
       this.showToast('选择目录出错: ' + e, 'error');
+    }
+  },
+
+  async selectRecentFile(path) {
+    if (!path) return;
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_md_path: path })
+      });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        this.state.targetMdPath = path;
+        this.state.lastSavedMarkdown = '';
+        this.state.config = data.config;
+        this.renderHeaderInfo();
+        this.fetchMarkdown();
+        this.showToast(`已切换至: ${path.split(/[\/\\]/).pop()}`, 'success');
+      } else {
+        this.showToast(data.message || '切换失败', 'error');
+      }
+    } catch (e) {
+      this.showToast('切换文件出错: ' + e, 'error');
     }
   },
 
@@ -384,7 +486,7 @@ const App = {
       });
       const data = await res.json();
       if (data.status === 'ok') {
-        this.showToast('已在文件管理器中定位', 'info');
+        this.showToast('已在 Windows 文件资源管理器中定位', 'info');
       } else {
         this.showToast(data.message || '打开失败', 'error');
       }
@@ -407,15 +509,6 @@ const App = {
     }
   },
 
-  copyMarkdownLink(relPath, alt = '截图') {
-    const text = `![${alt}](${relPath})`;
-    navigator.clipboard.writeText(text).then(() => {
-      this.showToast('已复制 Markdown 图片链接到剪贴板', 'success');
-    }).catch(() => {
-      this.showToast('复制失败，请手动复制', 'error');
-    });
-  },
-
   zoomImage(src) {
     this.state.zoomImageSrc = src;
     const modal = document.getElementById('zoom-modal');
@@ -431,7 +524,7 @@ const App = {
     if (modal) modal.style.display = 'none';
   },
 
-  // Settings Logic
+  // Settings
   openSettings() {
     this.renderSettingsForm();
     document.getElementById('settings-modal').style.display = 'flex';
@@ -456,11 +549,9 @@ const App = {
     const cfg = this.state.config;
     if (!cfg) return;
 
-    // Target MD
     const inputMd = document.getElementById('cfg-target-md');
     if (inputMd) inputMd.value = cfg.target_md_path || '';
 
-    // Image save mode
     const modeSelect = document.getElementById('cfg-img-mode');
     if (modeSelect) modeSelect.value = cfg.image_folder_mode || 'relative';
 
@@ -480,13 +571,11 @@ const App = {
     const imgFormatSelect = document.getElementById('cfg-img-format');
     if (imgFormatSelect) imgFormatSelect.value = cfg.image_format || 'png';
 
-    // Hotkeys
     const hotkeys = cfg.hotkeys || {};
     document.getElementById('key-badge-region').textContent = hotkeys.snip_region || '未设置';
     document.getElementById('key-badge-fullscreen').textContent = hotkeys.snip_fullscreen || '未设置';
     document.getElementById('key-badge-window').textContent = hotkeys.snip_active_window || '未设置';
 
-    // Toggles
     const chkClipboard = document.getElementById('cfg-auto-clipboard');
     if (chkClipboard) chkClipboard.checked = !!cfg.auto_clipboard_watch;
 
@@ -495,45 +584,6 @@ const App = {
 
     const chkNotify = document.getElementById('cfg-notify');
     if (chkNotify) chkNotify.checked = !!cfg.desktop_notification;
-
-    // Template
-    const tplTextarea = document.getElementById('cfg-template');
-    if (tplTextarea) tplTextarea.value = cfg.markdown_template || '';
-
-    // Recent files
-    const recentList = document.getElementById('recent-files-list');
-    if (recentList && cfg.recent_files) {
-      recentList.innerHTML = cfg.recent_files.map(f => `
-        <div class="recent-file-item" onclick="App.selectRecentFile('${f}')" style="display:flex; justify-content:space-between; padding:6px 10px; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; font-size:12px; cursor:pointer;">
-          <span style="color:var(--accent-light); font-weight:600;">${f.split(/[\/\\]/).pop()}</span>
-          <span style="color:var(--text-muted); max-width:280px; overflow:hidden; text-overflow:ellipsis;">${f}</span>
-        </div>
-      `).join('');
-    }
-  },
-
-  async selectRecentFile(path) {
-    if (!path) return;
-    try {
-      const res = await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target_md_path: path })
-      });
-      const data = await res.json();
-      if (data.status === 'ok') {
-        this.state.targetMdPath = path;
-        this.state.config = data.config;
-        this.renderHeaderInfo();
-        this.fetchMarkdown();
-        this.fetchCaptures();
-        this.showToast(`已切换至文档: ${path.split(/[\/\\]/).pop()}`, 'success');
-      } else {
-        this.showToast(data.message || '切换失败', 'error');
-      }
-    } catch (e) {
-      this.showToast('切换文件出错: ' + e, 'error');
-    }
   },
 
   async saveSettings() {
@@ -547,7 +597,6 @@ const App = {
       auto_clipboard_watch: document.getElementById('cfg-auto-clipboard').checked,
       play_sound: document.getElementById('cfg-play-sound').checked,
       desktop_notification: document.getElementById('cfg-notify').checked,
-      markdown_template: document.getElementById('cfg-template').value,
       hotkeys: {
         snip_region: document.getElementById('key-badge-region').textContent.trim(),
         snip_fullscreen: document.getElementById('key-badge-fullscreen').textContent.trim(),
@@ -570,7 +619,6 @@ const App = {
         this.showToast('配置已保存并生效', 'success');
         this.closeSettings();
         this.fetchMarkdown();
-        this.fetchCaptures();
       } else {
         this.showToast(data.message || '保存配置失败', 'error');
       }
@@ -579,20 +627,16 @@ const App = {
     }
   },
 
-  // Interactive Hotkey Recording
   startRecordingKey(action) {
     this.state.recordingAction = action;
-    this.state.recordedKeys = [];
-
     const badgeMap = {
       'snip_region': 'key-badge-region',
       'snip_fullscreen': 'key-badge-fullscreen',
       'snip_active_window': 'key-badge-window'
     };
-
     const badge = document.getElementById(badgeMap[action]);
     if (badge) {
-      badge.textContent = '请按下快捷键组合...';
+      badge.textContent = '请按下快捷键...';
       badge.classList.add('recording');
     }
   },
@@ -602,18 +646,6 @@ const App = {
     document.querySelectorAll('.key-badge').forEach(b => b.classList.remove('recording'));
   },
 
-  insertTemplateVar(variable) {
-    const textarea = document.getElementById('cfg-template');
-    if (!textarea) return;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const text = textarea.value;
-    textarea.value = text.substring(0, start) + variable + text.substring(end);
-    textarea.focus();
-    textarea.selectionStart = textarea.selectionEnd = start + variable.length;
-  },
-
-  // New Note Modal
   openNewFileModal() {
     document.getElementById('new-file-modal').style.display = 'flex';
     document.getElementById('new-file-title').value = '';
@@ -640,10 +672,10 @@ const App = {
       if (data.status === 'ok') {
         this.closeNewFileModal();
         this.state.targetMdPath = data.path;
+        this.state.lastSavedMarkdown = '';
         this.fetchConfig();
         this.fetchMarkdown();
-        this.fetchCaptures();
-        this.showToast(`新笔记创建成功: ${data.filename}`, 'success');
+        this.showToast(`新课程笔记创建成功: ${data.filename}`, 'success');
       } else {
         this.showToast(data.message || '创建失败', 'error');
       }
@@ -652,8 +684,251 @@ const App = {
     }
   },
 
+  // =========================================================
+  // WYSIWYG VISUAL FORMATTING ACTIONS (YOUDAO NOTE STYLE)
+  // =========================================================
+  wysiwyg: {
+    getEditor() {
+      return document.getElementById('wysiwyg-editor');
+    },
+
+    exec(command, value = null) {
+      document.execCommand(command, false, value);
+      App.onEditorInput();
+    },
+
+    formatHeading(tag) {
+      const editor = this.getEditor();
+      if (!editor) return;
+
+      if (tag === 'p') {
+        document.execCommand('formatBlock', false, '<p>');
+      } else {
+        document.execCommand('formatBlock', false, `<${tag}>`);
+      }
+
+      // Sync select dropdown
+      const select = document.getElementById('block-format-select');
+      if (select) select.value = tag;
+
+      App.onEditorInput();
+    },
+
+    insertBlockquote() {
+      document.execCommand('formatBlock', false, '<blockquote>');
+      App.onEditorInput();
+    },
+
+    insertInlineCode() {
+      const selection = window.getSelection();
+      if (!selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      const selectedText = range.toString() || 'code';
+
+      const codeEl = document.createElement('code');
+      codeEl.textContent = selectedText;
+
+      range.deleteContents();
+      range.insertNode(codeEl);
+
+      // Move cursor after code element
+      range.setStartAfter(codeEl);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      App.onEditorInput();
+    },
+
+    insertCodeBlock() {
+      const selection = window.getSelection();
+      if (!selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      const selectedText = range.toString() || '// 在此输入代码';
+
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      code.textContent = selectedText;
+      pre.appendChild(code);
+
+      range.deleteContents();
+      range.insertNode(pre);
+
+      const p = document.createElement('p');
+      p.innerHTML = '<br>';
+      pre.parentNode.insertBefore(p, pre.nextSibling);
+
+      App.onEditorInput();
+    },
+
+    insertTable() {
+      const tableHtml = `
+        <table>
+          <thead>
+            <tr><th>列标题 1</th><th>列标题 2</th><th>列标题 3</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>内容 1</td><td>内容 2</td><td>内容 3</td></tr>
+            <tr><td>内容 4</td><td>内容 5</td><td>内容 6</td></tr>
+          </tbody>
+        </table>
+        <p><br></p>
+      `;
+      document.execCommand('insertHTML', false, tableHtml);
+      App.onEditorInput();
+    },
+
+    insertLink() {
+      const selection = window.getSelection();
+      const selectedText = selection ? selection.toString() : '';
+      const url = prompt('请输入超链接 URL 地址:', 'https://');
+      if (url) {
+        if (selectedText) {
+          document.execCommand('createLink', false, url);
+        } else {
+          document.execCommand('insertHTML', false, `<a href="${url}" target="_blank">${url}</a>`);
+        }
+        App.onEditorInput();
+      }
+    }
+  },
+
   bindDOMEvents() {
-    // Global Keyboard Listener for Hotkey Recording
+    const editor = document.getElementById('wysiwyg-editor');
+    if (editor) {
+      editor.addEventListener('input', () => this.onEditorInput());
+      editor.addEventListener('blur', () => this.saveMarkdownContent(true));
+      window.addEventListener('beforeunload', () => this.saveMarkdownContent(true));
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+          this.saveMarkdownContent(true);
+        }
+      });
+
+      // Rich Keyboard Shortcuts (Ctrl+1~4, Ctrl+B, Ctrl+I, Ctrl+S)
+      editor.addEventListener('keydown', (e) => {
+        const isCmdOrCtrl = e.ctrlKey || e.metaKey;
+
+        if (isCmdOrCtrl) {
+          // Ctrl + 1 (H1)
+          if (e.key === '1') {
+            e.preventDefault();
+            this.wysiwyg.formatHeading('h1');
+            return;
+          }
+          // Ctrl + 2 (H2)
+          if (e.key === '2') {
+            e.preventDefault();
+            this.wysiwyg.formatHeading('h2');
+            return;
+          }
+          // Ctrl + 3 (H3)
+          if (e.key === '3') {
+            e.preventDefault();
+            this.wysiwyg.formatHeading('h3');
+            return;
+          }
+          // Ctrl + 4 (H4)
+          if (e.key === '4') {
+            e.preventDefault();
+            this.wysiwyg.formatHeading('h4');
+            return;
+          }
+          // Ctrl + 0 (Paragraph)
+          if (e.key === '0') {
+            e.preventDefault();
+            this.wysiwyg.formatHeading('p');
+            return;
+          }
+
+          // Ctrl + B (Bold)
+          if (e.key === 'b' || e.key === 'B') {
+            e.preventDefault();
+            this.wysiwyg.exec('bold');
+            return;
+          }
+
+          // Ctrl + I (Italic)
+          if (e.key === 'i' || e.key === 'I') {
+            e.preventDefault();
+            this.wysiwyg.exec('italic');
+            return;
+          }
+
+          // Ctrl + K (Link)
+          if (e.key === 'k' || e.key === 'K') {
+            e.preventDefault();
+            this.wysiwyg.insertLink();
+            return;
+          }
+
+          // Ctrl + Q (Blockquote)
+          if (e.key === 'q' || e.key === 'Q') {
+            e.preventDefault();
+            this.wysiwyg.insertBlockquote();
+            return;
+          }
+
+          // Ctrl + E (Inline Code)
+          if (e.key === 'e' || e.key === 'E') {
+            e.preventDefault();
+            this.wysiwyg.insertInlineCode();
+            return;
+          }
+
+          // Ctrl + U (Bullet List)
+          if (e.key === 'u' || e.key === 'U') {
+            e.preventDefault();
+            this.wysiwyg.exec('insertUnorderedList');
+            return;
+          }
+
+          // Ctrl + O (Ordered List)
+          if (e.key === 'o' || e.key === 'O') {
+            e.preventDefault();
+            this.wysiwyg.exec('insertOrderedList');
+            return;
+          }
+
+          // Ctrl + Shift + C (Code block)
+          if (e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+            e.preventDefault();
+            this.wysiwyg.insertCodeBlock();
+            return;
+          }
+
+          // Ctrl + Shift + T (Table)
+          if (e.shiftKey && (e.key === 't' || e.key === 'T')) {
+            e.preventDefault();
+            this.wysiwyg.insertTable();
+            return;
+          }
+
+          // Ctrl + Shift + X (Strikethrough)
+          if (e.shiftKey && (e.key === 'x' || e.key === 'X')) {
+            e.preventDefault();
+            this.wysiwyg.exec('strikeThrough');
+            return;
+          }
+
+          // Ctrl + S (Save)
+          if (e.key === 's' || e.key === 'S') {
+            e.preventDefault();
+            this.saveMarkdownContent(false);
+            return;
+          }
+        }
+
+        // Tab indentation
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          document.execCommand('insertText', false, '  ');
+          this.onEditorInput();
+        }
+      });
+    }
+
+    // Global Key Listener for Hotkey Recording in Settings
     window.addEventListener('keydown', (e) => {
       if (!this.state.recordingAction) return;
 
@@ -673,10 +948,7 @@ const App = {
       if (e.metaKey) keys.push('Win');
 
       let mainKey = e.key;
-      if (['Control', 'Alt', 'Shift', 'Meta'].includes(mainKey)) {
-        // Just modifier key pressed so far
-        return;
-      }
+      if (['Control', 'Alt', 'Shift', 'Meta'].includes(mainKey)) return;
 
       if (mainKey.startsWith('Key')) mainKey = mainKey.slice(3);
       if (mainKey.startsWith('Digit')) mainKey = mainKey.slice(5);
@@ -699,7 +971,6 @@ const App = {
       this.state.recordingAction = null;
     });
 
-    // Image save mode change
     const modeSelect = document.getElementById('cfg-img-mode');
     if (modeSelect) {
       modeSelect.addEventListener('change', (e) => {
@@ -707,16 +978,6 @@ const App = {
         if (row) row.style.display = (e.target.value === 'custom') ? 'flex' : 'none';
       });
     }
-
-    // Hotkey for Ctrl+S in editor
-    window.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        if (this.state.activeDocTab === 'source') {
-          e.preventDefault();
-          this.saveMarkdownContent();
-        }
-      }
-    });
   }
 };
 

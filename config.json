@@ -13,8 +13,8 @@
   },
   "auto_clipboard_watch": false,
   "markdown_template": "\n\n![{filename}]({image_path})\n{note}\n",
-  "play_sound": true,
-  "desktop_notification": true,
+  "play_sound": false,
+  "desktop_notification": false,
   "open_browser_on_start": true,
   "server_port": 5000,
   "recent_files": [
