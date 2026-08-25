@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>📸 Markdown 视频课程截图助手</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <!-- Marked.js for Markdown parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+  <!-- Top App Header -->
+  <header class="app-header">
+    <div class="logo-area">
+      <div class="logo-icon">📸</div>
+      <div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="logo-title">Markdown 截图助手</span>
+          <span class="logo-badge">课程跟学神器</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hotkey Status Pill -->
+    <div class="hotkey-indicator" title="后台全局监听中，可随时在任意窗口按下快捷键">
+      <span class="status-dot"></span>
+      <span id="header-hotkeys-text">监听中...</span>
+    </div>
+
+    <!-- Header Quick Actions -->
+    <div class="header-actions">
+      <button class="btn btn-primary" onclick="App.triggerCapture('region')" title="划选屏幕区域截取 (默认 Alt+Q)">
+        <span>🎯</span> 选区截图
+      </button>
+      <button class="btn btn-secondary" onclick="App.triggerCapture('fullscreen')" title="一键全屏截取 (默认 F9)">
+        <span>⚡</span> 全屏截取
+      </button>
+      <button class="btn btn-secondary btn-icon" onclick="App.openSettings()" title="设置中心 (快捷键/模板/高级设置)">
+        ⚙️
+      </button>
+      <button class="btn btn-secondary btn-icon" id="theme-toggle-btn" onclick="App.toggleTheme()" title="切换明亮/暗黑主题">
+        ☀️
+      </button>
+    </div>
+  </header>
+
+  <!-- Outside Target Document & Directory Toolbar -->
+  <div class="target-bar">
+    <div class="target-bar-left">
+      <span class="target-bar-label">🎯 目标MD文档:</span>
+      <span class="target-file-tag" id="current-target-path" title="点击查看完整路径">正在读取...</span>
+      <button class="btn btn-primary btn-sm" onclick="App.pickTargetFile()" title="点击打开系统文件弹窗选择要记录的 Markdown 文件">📁 选择MD文件</button>
+      <button class="btn btn-secondary btn-sm" onclick="App.openNewFileModal()" title="新建一个全新的课程 Markdown 笔记">➕ 新建笔记</button>
+      <button class="btn btn-secondary btn-sm" onclick="App.openInFolder('md')" title="在 Windows 资源管理器中打开当前 Markdown 所在的文件夹">📂 打开MD所在目录</button>
+      <button class="btn btn-secondary btn-sm" onclick="App.pickImageDir()" title="更改截图图片的存放文件夹">🖼️ 更改图片目录</button>
+    </div>
+    <div class="target-bar-right">
+      <select id="recent-files-select" class="recent-select" onchange="if(this.value) App.selectRecentFile(this.value)" title="快速切换最近打开过的笔记文件">
+        <option value="">🕒 快速切换最近文档...</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Main Workspace -->
+  <main class="main-container">
+    
+    <!-- Left Panel: Live Capture Feed & Quick Actions -->
+    <section class="left-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>📸</span> 最新截图流
+        </div>
+        <div style="display: flex; gap: 6px;">
+          <button class="btn btn-secondary btn-sm" onclick="App.fetchCaptures()" title="刷新列表">🔄 刷新</button>
+          <button class="btn btn-secondary btn-sm" onclick="App.openInFolder('images')" title="打开截图存储文件夹">📂 截图库</button>
+        </div>
+      </div>
+
+      <!-- Quick Action / Note Input Bar -->
+      <div class="quick-action-bar">
+        <input type="text" id="quick-note-text" class="quick-note-input" placeholder="输入要点备注，再点击截图（或按快捷键）..." />
+        <button class="btn btn-primary btn-sm" onclick="App.triggerCapture('fullscreen')" title="带备注全屏截图">⚡ 快速截图</button>
+      </div>
+
+      <!-- Captured Cards List -->
+      <div class="capture-feed" id="capture-feed">
+        <!-- Rendered by JS -->
+      </div>
+    </section>
+
+    <!-- Right Panel: Live Markdown Preview & Editor -->
+    <section class="right-panel">
+      <div class="doc-header">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div class="tab-switcher">
+            <button class="tab-btn active" id="tab-preview-btn" onclick="App.switchDocTab('preview')">👁️ 实时预览</button>
+            <button class="tab-btn" id="tab-source-btn" onclick="App.switchDocTab('source')">✏️ 源码编辑</button>
+          </div>
+          <span style="font-size: 12px; color: var(--text-muted);" id="doc-screenshot-count">0 张截图</span>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button class="btn btn-primary btn-sm" onclick="App.pickTargetFile()" title="点击直接打开系统弹窗选择要记录的 Markdown 文件">📁 选择MD文件</button>
+          <button class="btn btn-secondary btn-sm" onclick="App.openNewFileModal()" title="新建 Markdown 课程笔记">➕ 新建文档</button>
+          <button class="btn btn-secondary btn-sm" onclick="App.openInEditor()" title="在电脑本地默认编辑器(Typora/VSCode等)中打开">🚀 本地编辑器打开</button>
+          <button class="btn btn-secondary btn-sm" onclick="App.openInFolder('md')" title="在文件资源管理器中定位">📂 所在目录</button>
+          <button class="btn btn-secondary btn-sm" onclick="App.saveMarkdownContent()" title="保存当前编辑的 Markdown (Ctrl+S)">💾 保存文档</button>
+        </div>
+      </div>
+
+      <!-- Live Document Container -->
+      <div class="doc-view-container" id="doc-view-container">
+        <!-- Rendered Markdown View -->
+        <article class="markdown-body" id="markdown-preview">
+          <!-- Rendered by JS -->
+        </article>
+
+        <!-- Raw Markdown Source Code Editor -->
+        <div id="markdown-editor-wrapper" style="display: none; height: 100%;">
+          <textarea id="markdown-editor" class="editor-textarea" placeholder="在此编辑 Markdown 源码... (按 Ctrl+S 快速保存)"></textarea>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Settings Modal (⚙️ 配置中心) -->
+  <div class="modal-backdrop" id="settings-modal" style="display: none;" onclick="if(event.target===this) App.closeSettings()">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">⚙️ 配置中心</div>
+        <button class="btn btn-secondary btn-sm" onclick="App.closeSettings()">✕</button>
+      </div>
+
+      <!-- Settings Tabs -->
+      <div style="display: flex; gap: 8px; padding: 12px 24px 0; border-bottom: 1px solid var(--border-color); background: var(--bg-secondary);">
+        <button class="tab-btn settings-tab-btn active" data-tab="target" onclick="App.switchSettingsTab('target')">📁 目标文档与存储</button>
+        <button class="tab-btn settings-tab-btn" data-tab="hotkey" onclick="App.switchSettingsTab('hotkey')">⌨️ 快捷键自定义</button>
+        <button class="tab-btn settings-tab-btn" data-tab="template" onclick="App.switchSettingsTab('template')">📝 插入模板定制</button>
+        <button class="tab-btn settings-tab-btn" data-tab="advance" onclick="App.switchSettingsTab('advance')">🔔 体验与通知</button>
+      </div>
+
+      <div class="modal-body">
+        
+        <!-- Tab 1: Target Document & Image Storage -->
+        <div class="settings-tab-pane" id="tab-pane-target" style="display: flex; flex-direction: column; gap: 16px;">
+          
+          <div class="form-group">
+            <label class="form-label">
+              <span>🎯 目标 Markdown 文件路径</span>
+              <span class="form-hint">截图将自动追加到此文件末尾</span>
+            </label>
+            <div class="input-with-btn">
+              <input type="text" id="cfg-target-md" class="form-input" placeholder="例如 F:/AI/notes/course.md" />
+              <button class="btn btn-primary" onclick="App.pickTargetFile()">📁 浏览选择</button>
+              <button class="btn btn-secondary" onclick="App.openNewFileModal()">➕ 新建</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">🕒 最近使用的笔记文档</label>
+            <div id="recent-files-list" style="display: flex; flex-direction: column; gap: 6px; max-height: 120px; overflow-y: auto;">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
+          <div style="border-top: 1px solid var(--border-color); padding-top: 12px; display: flex; flex-direction: column; gap: 14px;">
+            <div class="form-group">
+              <label class="form-label">🖼️ 图片存储策略</label>
+              <select id="cfg-img-mode" class="form-input">
+                <option value="relative">存放在 Markdown 所在目录的相对子文件夹中 (推荐)</option>
+                <option value="custom">存放在自定义绝对文件夹中</option>
+              </select>
+            </div>
+
+            <div class="form-group" id="relative-img-folder-row">
+              <label class="form-label">
+                <span>相对子文件夹名</span>
+                <span class="form-hint">如 assets、images，将在 MD 所在目录下自动生成</span>
+              </label>
+              <input type="text" id="cfg-img-folder-name" class="form-input" value="assets" />
+            </div>
+
+            <div class="form-group" id="custom-img-folder-row" style="display: none;">
+              <label class="form-label">自定义图片存储绝对路径</label>
+              <div class="input-with-btn">
+                <input type="text" id="cfg-custom-img-folder" class="form-input" placeholder="例如 D:/images/course_pics" />
+                <button class="btn btn-secondary" onclick="App.pickImageDir()">📁 选择目录</button>
+              </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+              <div class="form-group">
+                <label class="form-label">图片命名前缀</label>
+                <input type="text" id="cfg-img-prefix" class="form-input" value="course_" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">图片保存格式</label>
+                <select id="cfg-img-format" class="form-input">
+                  <option value="png">PNG (清晰无损，推荐)</option>
+                  <option value="jpg">JPG (高压缩率)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Tab 2: Hotkeys -->
+        <div class="settings-tab-pane" id="tab-pane-hotkey" style="display: none; flex-direction: column; gap: 18px;">
+          <p style="font-size: 13px; color: var(--text-secondary);">
+            💡 全局快捷键在您看视频、全屏播放或浏览任何网页时均可在后台全局触发，即按即截！
+          </p>
+
+          <!-- Snip Region -->
+          <div class="hotkey-recorder-box">
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">🎯 选区划选截图 (推荐)</div>
+              <div style="font-size: 12px; color: var(--text-muted);">冻结屏幕并自由拖拽选取视频区域</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span class="key-badge" id="key-badge-region">Alt+Q</span>
+              <button class="btn btn-secondary btn-sm" onclick="App.startRecordingKey('snip_region')">按键录制</button>
+            </div>
+          </div>
+
+          <!-- Snip Fullscreen -->
+          <div class="hotkey-recorder-box">
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">⚡ 全屏秒截</div>
+              <div style="font-size: 12px; color: var(--text-muted);">不中断视频播放，按下瞬间完成全屏截图并存入文档</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span class="key-badge" id="key-badge-fullscreen">F9</span>
+              <button class="btn btn-secondary btn-sm" onclick="App.startRecordingKey('snip_fullscreen')">按键录制</button>
+            </div>
+          </div>
+
+          <!-- Snip Active Window -->
+          <div class="hotkey-recorder-box">
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">🪟 当前活动窗口截图</div>
+              <div style="font-size: 12px; color: var(--text-muted);">自动截取当前正在播放视频的播放器或浏览器窗口</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span class="key-badge" id="key-badge-window">Alt+W</span>
+              <button class="btn btn-secondary btn-sm" onclick="App.startRecordingKey('snip_active_window')">按键录制</button>
+            </div>
+          </div>
+
+          <div style="background: var(--bg-primary); padding: 12px; border-radius: var(--radius-md); font-size: 12px; color: var(--text-muted); border: 1px dashed var(--border-color);">
+            📌 快捷键录制方法：点击对应的“按键录制”按钮，然后直接在键盘上按下你想要的组合键（如 <code>Ctrl + Alt + A</code>、<code>Alt + S</code>、<code>F8</code>、<code>F9</code> 等），系统将自动识别并保存。按 <code>Esc</code> 可取消录制。
+          </div>
+        </div>
+
+        <!-- Tab 3: Template -->
+        <div class="settings-tab-pane" id="tab-pane-template" style="display: none; flex-direction: column; gap: 14px;">
+          <div class="form-group">
+            <label class="form-label">
+              <span>📝 Markdown 自动追加模板</span>
+              <span class="form-hint">每次截图完成后追加到文档末尾的内容格式</span>
+            </label>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="App.insertTemplateVar('{image_path}')">+ 图片相对路径</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="App.insertTemplateVar('{filename}')">+ 图片文件名</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="App.insertTemplateVar('{timestamp}')">+ 当前时间戳</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="App.insertTemplateVar('{index}')">+ 递增序号</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="App.insertTemplateVar('{note}')">+ 备注内容</button>
+            </div>
+            <textarea id="cfg-template" class="form-input" rows="7" style="font-family: var(--font-mono); font-size: 13px; line-height: 1.5;"></textarea>
+          </div>
+        </div>
+
+        <!-- Tab 4: Advanced & Notification -->
+        <div class="settings-tab-pane" id="tab-pane-advance" style="display: none; flex-direction: column; gap: 16px;">
+          
+          <label class="switch-label">
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">📋 剪贴板图片自动追加监听</div>
+              <div style="font-size: 12px; color: var(--text-muted);">启用后，使用微信截图 (Alt+A)、Snipaste (F1) 或 Win+Shift+S 复制图片时，也会自动存入当前 Markdown</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cfg-auto-clipboard">
+              <span class="slider"></span>
+            </label>
+          </label>
+
+          <div style="border-top: 1px solid var(--border-color); padding-top: 12px;"></div>
+
+          <label class="switch-label">
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">🔔 截图成功播放轻柔提示音</div>
+              <div style="font-size: 12px; color: var(--text-muted);">截图保存完成后发出提示音，无需切回窗口即可确认已存好</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cfg-play-sound" checked>
+              <span class="slider"></span>
+            </label>
+          </label>
+
+          <div style="border-top: 1px solid var(--border-color); padding-top: 12px;"></div>
+
+          <label class="switch-label">
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">💬 Windows 桌面气泡通知</div>
+              <div style="font-size: 12px; color: var(--text-muted);">在屏幕右下角弹出保存成功的简短消息</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cfg-notify" checked>
+              <span class="slider"></span>
+            </label>
+          </label>
+
+        </div>
+
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="App.closeSettings()">取消</button>
+        <button class="btn btn-primary" onclick="App.saveSettings()">💾 保存并应用配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New File Modal -->
+  <div class="modal-backdrop" id="new-file-modal" style="display: none;" onclick="if(event.target===this) App.closeNewFileModal()">
+    <div class="modal-content" style="max-width: 480px;">
+      <div class="modal-header">
+        <div class="modal-title">➕ 新建课程 Markdown 笔记</div>
+        <button class="btn btn-secondary btn-sm" onclick="App.closeNewFileModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">课程/笔记名称</label>
+          <input type="text" id="new-file-title" class="form-input" placeholder="例如：Vue3全家桶实战课、机器学习第3章..." onkeydown="if(event.key==='Enter') App.createNewFile()" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="App.closeNewFileModal()">取消</button>
+        <button class="btn btn-primary" onclick="App.createNewFile()">创建并打开</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Image Zoom Modal (Lightbox) -->
+  <div class="modal-backdrop" id="zoom-modal" style="display: none;" onclick="App.closeZoomModal()">
+    <div style="max-width: 90vw; max-height: 90vh; position: relative; display: flex; align-items: center; justify-content: center;">
+      <img id="zoom-modal-img" src="" alt="放大预览" style="max-width: 100%; max-height: 88vh; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.2);" />
+      <button class="btn btn-secondary btn-sm" style="position: absolute; top: 12px; right: 12px;" onclick="App.closeZoomModal()">✕ 关闭 (点击任意处退出)</button>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

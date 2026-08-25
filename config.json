@@ -1,0 +1,23 @@
+{
+  "target_md_path": "E:/课程笔记/笔记/硬件/或非_硬件工程师10大系统入门合集/硬件工程师10大系统入门合集.md",
+  "image_folder_mode": "relative",
+  "image_folder_name": "assets",
+  "custom_image_folder": "",
+  "image_prefix": "course_",
+  "image_format": "png",
+  "image_quality": 95,
+  "hotkeys": {
+    "snip_region": "alt+q",
+    "snip_fullscreen": "f9",
+    "snip_active_window": "alt+w"
+  },
+  "auto_clipboard_watch": false,
+  "markdown_template": "\n\n![{filename}]({image_path})\n{note}\n",
+  "play_sound": true,
+  "desktop_notification": true,
+  "open_browser_on_start": true,
+  "server_port": 5000,
+  "recent_files": [
+    "E:/课程笔记/笔记/硬件/或非_硬件工程师10大系统入门合集/硬件工程师10大系统入门合集.md"
+  ]
+}

@@ -1,0 +1,7 @@
+flask>=3.0.0
+pynput>=1.7.6
+Pillow>=10.0.0
+mss>=9.0.0
+pywin32>=306
+plyer>=2.1.0
+win10toast>=0.9
