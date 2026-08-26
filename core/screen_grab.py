@@ -119,3 +119,26 @@ def grab_clipboard_image():
     except Exception as e:
         logger.debug(f"grab_clipboard_image notice: {e}")
     return None
+
+def copy_image_to_clipboard(pil_image):
+    """Copies a PIL Image directly to the Windows clipboard."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import io
+        import win32clipboard
+        import win32con
+        output = io.BytesIO()
+        pil_image.convert("RGB").save(output, "BMP")
+        data = output.getvalue()[14:]  # BMP header is 14 bytes; CF_DIB requires DIB header without BMP file header
+        output.close()
+
+        win32clipboard.OpenClipboard()
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32con.CF_DIB, data)
+        win32clipboard.CloseClipboard()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to copy image to clipboard: {e}")
+        return False
+

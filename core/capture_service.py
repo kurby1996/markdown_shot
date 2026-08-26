@@ -111,7 +111,16 @@ class CaptureService:
         def on_cancel():
             logger.info("Region snip cancelled.")
 
-        trigger_sniper(on_complete=on_complete, on_cancel=on_cancel)
+        try:
+            import importlib
+            import core.sniper
+            importlib.reload(core.sniper)
+            core.sniper.trigger_sniper(on_complete=on_complete, on_cancel=on_cancel)
+        except Exception as e:
+            logger.error(f"Error triggering sniper: {e}")
+            from core.sniper import trigger_sniper
+            trigger_sniper(on_complete=on_complete, on_cancel=on_cancel)
+
 
     def trigger_fullscreen_capture(self, note=""):
         """Instantly grabs fullscreen."""
