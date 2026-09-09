@@ -29,15 +29,26 @@ from core.capture_service import capture_service
 from core.clipboard_watcher import clipboard_watcher
 from server.api import app
 
-def is_port_in_use(port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('127.0.0.1', port)) == 0
+def is_port_available(port, host="0.0.0.0"):
+    """Check if the port can actually be bound (not in use and not reserved by Windows OS/Hyper-V)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            return True
+    except OSError:
+        return False
 
-def find_available_port(start_port=5000, max_attempts=10):
+def find_available_port(start_port=5000, max_attempts=100, host="0.0.0.0"):
     for p in range(start_port, start_port + max_attempts):
-        if not is_port_in_use(p):
+        if is_port_available(p, host):
             return p
-    return start_port
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, 0))
+            return s.getsockname()[1]
+    except OSError:
+        return start_port
 
 def setup_services():
     # 1. Windows DPI & Desktop Station
@@ -97,11 +108,22 @@ def main():
     try:
         # Run in single process mode with threading to avoid subshell issues
         app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         print("\n正在关闭服务与热键监听...")
         hotkey_manager.stop_listener()
         clipboard_watcher.stop()
         print("服务已安全退出。")
+    except SystemExit as e:
+        hotkey_manager.stop_listener()
+        clipboard_watcher.stop()
+        if e.code and e.code != 0:
+            print(f"\n[错误] Web 服务异常退出 (退出码: {e.code})")
+            sys.exit(e.code)
+    except Exception as e:
+        logger.error(f"Web 服务运行失败: {e}", exc_info=True)
+        hotkey_manager.stop_listener()
+        clipboard_watcher.stop()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
