@@ -399,6 +399,48 @@ const App = {
     if (statScreenshots) statScreenshots.textContent = `📸 截图: ${imgCount} 张`;
   },
 
+  scrollToStart() {
+    this.scrollToEdge(true);
+  },
+
+  scrollToEnd() {
+    this.scrollToEdge(false);
+  },
+
+  scrollToEdge(toStart) {
+    const container = document.getElementById('wysiwyg-scroll-container');
+    const editor = document.getElementById('wysiwyg-editor');
+
+    if (editor) {
+      try {
+        editor.focus({ preventScroll: true });
+      } catch (e) {
+        editor.focus();
+      }
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(toStart);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+
+    if (!container) return;
+
+    const applyScroll = () => {
+      const top = toStart ? 0 : container.scrollHeight;
+      container.style.scrollBehavior = 'auto';
+      container.scrollTop = top;
+      container.style.scrollBehavior = '';
+    };
+
+    applyScroll();
+    requestAnimationFrame(applyScroll);
+    setTimeout(applyScroll, 0);
+  },
+
   async triggerCapture(type) {
     try {
       this.showToast(`正在启动${type === 'region' ? '选区截图 (Alt+Q)' : '全屏秒截 (F9)'}...`, 'info');
@@ -917,6 +959,20 @@ const App = {
             this.saveMarkdownContent(false);
             return;
           }
+
+          // Ctrl + Home (Jump to document start)
+          if (e.key === 'Home') {
+            e.preventDefault();
+            this.scrollToStart();
+            return;
+          }
+
+          // Ctrl + End (Jump to document end)
+          if (e.key === 'End') {
+            e.preventDefault();
+            this.scrollToEnd();
+            return;
+          }
         }
 
         // Tab indentation
@@ -930,7 +986,17 @@ const App = {
 
     // Global Key Listener for Hotkey Recording in Settings
     window.addEventListener('keydown', (e) => {
-      if (!this.state.recordingAction) return;
+      if (!this.state.recordingAction) {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'End' || e.key === 'Home')) {
+          const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+          if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') {
+            e.preventDefault();
+            if (e.key === 'Home') this.scrollToStart();
+            else this.scrollToEnd();
+          }
+        }
+        return;
+      }
 
       e.preventDefault();
       e.stopPropagation();

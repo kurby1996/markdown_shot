@@ -107,6 +107,14 @@
         <button class="tool-btn" onclick="App.wysiwyg.exec('insertHorizontalRule')" title="分割线">➖ 分割线</button>
       </div>
 
+      <div class="toolbar-spacer"></div>
+
+      <!-- Jump to document start / end -->
+      <div class="toolbar-group">
+        <button class="tool-btn tool-btn-end" onmousedown="event.preventDefault()" onclick="App.scrollToStart()" title="回到文档开头 (Ctrl+Home)">⬆ 回到首页</button>
+        <button class="tool-btn tool-btn-end" onmousedown="event.preventDefault()" onclick="App.scrollToEnd()" title="跳转到文档末尾 (Ctrl+End)">⬇ 跳到末尾</button>
+      </div>
+
       <!-- Auto Save Status Indicator -->
       <div class="toolbar-group">
         <div class="auto-save-indicator" id="toolbar-auto-save" title="自动保存已开启：打字、排版或截图均实时自动存入 Markdown 文件 (支持 Ctrl+S 即时同步)">
@@ -138,7 +146,7 @@
         <span id="stat-save-status" class="save-status-saved">● 已保存</span>
       </div>
       <div class="statusbar-right">
-        <span class="stat-hint">💡 快捷键提示：<b>Ctrl+1~4</b> 标题 | <b>Ctrl+B</b> 加粗 | <b>Ctrl+I</b> 斜体 | <b>Ctrl+S</b> 保存 | <b>Alt+Q / F9</b> 截图</span>
+        <span class="stat-hint">💡 快捷键提示：<b>Ctrl+1~4</b> 标题 | <b>Ctrl+B</b> 加粗 | <b>Ctrl+I</b> 斜体 | <b>Ctrl+S</b> 保存 | <b>Ctrl+Home</b> 首页 | <b>Ctrl+End</b> 末尾 | <b>Alt+Q / F9</b> 截图</span>
       </div>
     </footer>
 

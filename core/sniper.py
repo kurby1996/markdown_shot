@@ -196,6 +196,7 @@ class SniperOverlay:
         self.color_buttons = {}
         self.lbl_size_val = None
         self.note_var = None
+        self._focus_after_ids = []
 
     def start(self):
         set_dpi_aware()
@@ -209,7 +210,7 @@ class SniperOverlay:
         self.root.geometry(f"{v_width}x{v_height}+{v_left}+{v_top}")
         self.root.overrideredirect(True)
 
-        self.canvas = tk.Canvas(self.root, highlightthickness=0, bg="black")
+        self.canvas = tk.Canvas(self.root, highlightthickness=0, bg="black", takefocus=True)
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
         self.tk_dark_img = ImageTk.PhotoImage(self.dark_image)
@@ -223,16 +224,28 @@ class SniperOverlay:
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
         self.canvas.bind("<Double-Button-1>", self.on_double_click)
-        self.canvas.bind("<ButtonPress-3>", self.on_cancel_event)
         self.canvas.bind("<Motion>", self.on_mouse_hover)
         
         # Mouse Wheel for dynamic stroke width and font size adjustment
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
         self.root.bind("<MouseWheel>", self.on_mouse_wheel)
 
-        # Keybindings
-        self.root.bind("<Escape>", self.on_cancel_event)
-        self.root.bind("<Return>", self.on_confirm_event)
+        # Cancel screenshot: right-click or Enter (Esc still works)
+        self.canvas.bind("<ButtonPress-3>", self.on_cancel_event)
+        self.root.bind("<ButtonPress-3>", self.on_cancel_event)
+        self.root.bind_all("<ButtonPress-3>", self.on_cancel_event)
+        for w in (self.root, self.canvas):
+            w.bind("<Escape>", self.on_cancel_event)
+            w.bind("<Return>", self.on_cancel_event)
+            w.bind("<KP_Enter>", self.on_cancel_event)
+            w.bind("<KeyPress-Return>", self.on_cancel_event)
+            w.bind("<KeyPress-KP_Enter>", self.on_cancel_event)
+            w.bind("<KeyPress-Escape>", self.on_cancel_event)
+        self.root.bind_all("<Escape>", self.on_cancel_event)
+        self.root.bind_all("<Return>", self.on_cancel_event)
+        self.root.bind_all("<KP_Enter>", self.on_cancel_event)
+        self.root.bind_all("<KeyPress-Return>", self.on_cancel_event)
+        self.root.bind_all("<KeyPress>", self.on_key_press)
         self.root.bind("<space>", self.on_space_event)
         self.root.bind("<Control-z>", lambda e: self.undo())
         self.root.bind("<Control-Z>", lambda e: self.undo())
@@ -258,16 +271,20 @@ class SniperOverlay:
         self.root.bind("t", lambda e: self.handle_quick_tool_key("text"))
         self.root.bind("T", lambda e: self.handle_quick_tool_key("text"))
 
-        self.root.lift()
-        self.root.focus_force()
+        self.root.bind("<Map>", lambda e: self._focus_overlay())
+        self._focus_overlay()
+        self._focus_after_ids = [
+            self.root.after(30, self._focus_overlay),
+            self.root.after(120, self._focus_overlay),
+        ]
         self.root.mainloop()
 
     def show_initial_hint(self, width, height):
-        hint_text = "🎯 拖拽鼠标选取截图区域 | 滚轮可调节线条粗细 | 右键或 Esc 退出"
+        hint_text = "🎯 拖拽鼠标选取截图区域 | 滚轮可调节线条粗细 | 右键或 Enter 取消截图"
         hx = width // 2
         hy = 36
         self.canvas.create_rectangle(
-            hx - 220, hy - 14, hx + 220, hy + 14,
+            hx - 250, hy - 14, hx + 250, hy + 14,
             fill="#0f172a", outline="#38bdf8", width=1, tags="initial_hint"
         )
         self.canvas.create_text(
@@ -455,6 +472,11 @@ class SniperOverlay:
             self.canvas.config(cursor="cross")
 
     def on_mouse_down(self, event):
+        if not self.current_text_entry:
+            try:
+                self.canvas.focus_set()
+            except Exception:
+                pass
         if self.current_text_entry:
             top, tw, (tx, ty), font_size, color, dims = self.current_text_entry
             box_w, box_h = dims[0], dims[1]
@@ -1472,6 +1494,15 @@ class SniperOverlay:
         if self.canvas:
             self.canvas.update_idletasks()
 
+    def _disable_button_takefocus(self, widget):
+        if isinstance(widget, tk.Button):
+            try:
+                widget.configure(takefocus=0)
+            except Exception:
+                pass
+        for child in widget.winfo_children():
+            self._disable_button_takefocus(child)
+
     def destroy_toolbar(self):
         if self.toolbar_frame:
             try:
@@ -1642,7 +1673,11 @@ class SniperOverlay:
             font=("Microsoft YaHei", 9)
         )
         note_entry.pack(side=tk.LEFT, padx=2, ipady=1)
-        note_entry.bind("<Return>", lambda e: self.on_confirm_event())
+        self._disable_button_takefocus(self.toolbar_frame)
+        try:
+            self.canvas.focus_set()
+        except Exception:
+            pass
 
         # Divider 5
         div5 = tk.Frame(self.toolbar_frame, width=1, height=20, bg="#334155")
@@ -1667,7 +1702,7 @@ class SniperOverlay:
 
         btn_ok = tk.Button(
             self.toolbar_frame,
-            text="✔ 完成 (Enter)",
+            text="✔ 完成",
             bg="#0284c7",
             fg="#ffffff",
             activebackground="#0369a1",
@@ -1683,7 +1718,7 @@ class SniperOverlay:
 
         btn_cancel = tk.Button(
             self.toolbar_frame,
-            text="✕",
+            text="✕ 取消",
             bg="#334155",
             fg="#cbd5e1",
             activebackground="#475569",
@@ -1774,11 +1809,7 @@ class SniperOverlay:
         self.confirmed = True
         copy_image_to_clipboard(annotated_img)
         logger.info("Annotated screenshot copied to clipboard.")
-
-        try:
-            self.root.destroy()
-        except Exception:
-            pass
+        self._close_overlay()
 
         if self.on_cancel:
             self.on_cancel()
@@ -1803,30 +1834,92 @@ class SniperOverlay:
 
         self.confirmed = True
         note = self.note_var.get().strip() if hasattr(self, "note_var") and self.note_var else ""
-
-        try:
-            self.root.destroy()
-        except Exception:
-            pass
+        self._close_overlay()
 
         if self.on_complete:
             self.on_complete(annotated_img, note)
 
+    def on_key_press(self, event=None):
+        if event is None:
+            return
+        if event.keysym in ("Return", "KP_Enter", "Escape", "ISO_Enter"):
+            return self.on_cancel_event(event)
+        if getattr(event, "keycode", None) in (13, 108, 0x0D):
+            return self.on_cancel_event(event)
+
     def on_cancel_event(self, event=None):
         if self.confirmed:
             return
+        # Annotation text editor uses Enter as newline.
+        if event is not None and self.current_text_entry:
+            keysym = getattr(event, "keysym", "")
+            if keysym in ("Return", "KP_Enter", "ISO_Enter") or getattr(event, "keycode", None) in (13, 108, 0x0D):
+                return
+        self._abort_snip()
+        return "break"
+
+    def _focus_overlay(self):
+        if self.confirmed or not self.root:
+            return
+        try:
+            self.root.lift()
+            self.root.focus_force()
+            self.canvas.focus_set()
+        except Exception:
+            pass
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            hwnd = self.root.winfo_id()
+            user32 = ctypes.windll.user32
+            user32.SetForegroundWindow(hwnd)
+            user32.SetFocus(hwnd)
+            ctypes.windll.imm32.ImmAssociateContext(hwnd, 0)
+            canvas_hwnd = self.canvas.winfo_id()
+            ctypes.windll.imm32.ImmAssociateContext(canvas_hwnd, 0)
+        except Exception:
+            pass
+
+    def _close_overlay(self):
+        for after_id in self._focus_after_ids:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        self._focus_after_ids = []
         if self.current_text_entry:
-            self.cancel_text_entry()
-            return
-        if self.selected_text_index is not None:
-            self.selected_text_index = None
-            self.redraw_annotations()
-            return
-        self.confirmed = True
+            try:
+                top = self.current_text_entry[0]
+                self.current_text_entry = None
+                self.current_text_entry_frame = None
+                top.destroy()
+            except Exception:
+                self.current_text_entry = None
+                self.current_text_entry_frame = None
+        try:
+            if self.root:
+                self.root.grab_release()
+        except Exception:
+            pass
         try:
             self.root.destroy()
         except Exception:
             pass
+        self._restore_global_hotkeys()
+
+    def _restore_global_hotkeys(self):
+        try:
+            from core.hotkey_manager import hotkey_manager
+            hotkey_manager.restart_listener()
+        except Exception as e:
+            logger.warning(f"Failed to restore hotkeys after snip: {e}")
+
+    def _abort_snip(self):
+        if self.confirmed:
+            return
+        self.confirmed = True
+        self._close_overlay()
         if self.on_cancel:
             self.on_cancel()
 

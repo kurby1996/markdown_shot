@@ -392,6 +392,15 @@ body {
   transform: scale(0.96);
 }
 
+.tool-btn-end {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+  color: var(--accent-light);
+  font-weight: 600;
+  padding: 4px 10px;
+  min-width: auto;
+}
+
 .tool-btn code {
   font-family: var(--font-mono);
   font-size: 11px;
