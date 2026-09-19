@@ -197,6 +197,7 @@ class SniperOverlay:
         self.lbl_size_val = None
         self.note_var = None
         self._focus_after_ids = []
+        self._global_listener = None
 
     def start(self):
         set_dpi_aware()
@@ -230,21 +231,23 @@ class SniperOverlay:
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
         self.root.bind("<MouseWheel>", self.on_mouse_wheel)
 
-        # Cancel screenshot: right-click or Enter (Esc still works)
+        # Cancel screenshot: right-click or Esc. Enter behavior depends on selection state.
         self.canvas.bind("<ButtonPress-3>", self.on_cancel_event)
         self.root.bind("<ButtonPress-3>", self.on_cancel_event)
         self.root.bind_all("<ButtonPress-3>", self.on_cancel_event)
         for w in (self.root, self.canvas):
             w.bind("<Escape>", self.on_cancel_event)
-            w.bind("<Return>", self.on_cancel_event)
-            w.bind("<KP_Enter>", self.on_cancel_event)
-            w.bind("<KeyPress-Return>", self.on_cancel_event)
-            w.bind("<KeyPress-KP_Enter>", self.on_cancel_event)
             w.bind("<KeyPress-Escape>", self.on_cancel_event)
+            w.bind("<Return>", self.on_enter_event)
+            w.bind("<KP_Enter>", self.on_enter_event)
+            w.bind("<KeyPress-Return>", self.on_enter_event)
+            w.bind("<KeyPress-KP_Enter>", self.on_enter_event)
         self.root.bind_all("<Escape>", self.on_cancel_event)
-        self.root.bind_all("<Return>", self.on_cancel_event)
-        self.root.bind_all("<KP_Enter>", self.on_cancel_event)
-        self.root.bind_all("<KeyPress-Return>", self.on_cancel_event)
+        self.root.bind_all("<KeyPress-Escape>", self.on_cancel_event)
+        self.root.bind_all("<Return>", self.on_enter_event)
+        self.root.bind_all("<KP_Enter>", self.on_enter_event)
+        self.root.bind_all("<KeyPress-Return>", self.on_enter_event)
+        self.root.bind_all("<KeyPress-KP_Enter>", self.on_enter_event)
         self.root.bind_all("<KeyPress>", self.on_key_press)
         self.root.bind("<space>", self.on_space_event)
         self.root.bind("<Control-z>", lambda e: self.undo())
@@ -277,6 +280,42 @@ class SniperOverlay:
             self.root.after(30, self._focus_overlay),
             self.root.after(120, self._focus_overlay),
         ]
+
+        # Global key listener for Enter / Esc to guarantee response even if window lacks OS focus
+        try:
+            from pynput import keyboard as pynput_keyboard
+            def _on_global_key_press(key):
+                if self.confirmed:
+                    return
+                # If editing text annotation on canvas, don't hijack Enter
+                if self.current_text_entry:
+                    if key == pynput_keyboard.Key.esc or getattr(key, 'vk', None) == 27:
+                        try:
+                            self.root.after_idle(self.cancel_text_entry)
+                        except Exception:
+                            pass
+                    return
+
+                is_enter = (key == pynput_keyboard.Key.enter) or (getattr(key, 'vk', None) in (13, 108))
+                is_esc = (key == pynput_keyboard.Key.esc) or (getattr(key, 'vk', None) == 27)
+
+                if is_enter:
+                    try:
+                        self.root.after_idle(lambda: self.on_enter_event(None))
+                    except Exception:
+                        pass
+                elif is_esc:
+                    try:
+                        self.root.after_idle(lambda: self.on_cancel_event(None))
+                    except Exception:
+                        pass
+
+            self._global_listener = pynput_keyboard.Listener(on_press=_on_global_key_press)
+            self._global_listener.daemon = True
+            self._global_listener.start()
+        except Exception as e:
+            logger.warning(f"Could not start overlay global key listener: {e}")
+
         self.root.mainloop()
 
     def show_initial_hint(self, width, height):
@@ -1673,6 +1712,8 @@ class SniperOverlay:
             font=("Microsoft YaHei", 9)
         )
         note_entry.pack(side=tk.LEFT, padx=2, ipady=1)
+        note_entry.bind("<Return>", lambda e: (self.on_enter_event(e), "break")[1])
+        note_entry.bind("<KP_Enter>", lambda e: (self.on_enter_event(e), "break")[1])
         self._disable_button_takefocus(self.toolbar_frame)
         try:
             self.canvas.focus_set()
@@ -1702,7 +1743,7 @@ class SniperOverlay:
 
         btn_ok = tk.Button(
             self.toolbar_frame,
-            text="✔ 完成",
+            text="✔ 完成 (Enter)",
             bg="#0284c7",
             fg="#ffffff",
             activebackground="#0369a1",
@@ -1839,22 +1880,36 @@ class SniperOverlay:
         if self.on_complete:
             self.on_complete(annotated_img, note)
 
-    def on_key_press(self, event=None):
-        if event is None:
+    def on_enter_event(self, event=None):
+        if self.confirmed:
+            return "break"
+        # Annotation text editor uses Enter as newline.
+        if self.current_text_entry:
             return
-        if event.keysym in ("Return", "KP_Enter", "Escape", "ISO_Enter"):
-            return self.on_cancel_event(event)
-        if getattr(event, "keycode", None) in (13, 108, 0x0D):
+        if self.has_selection:
+            self.on_confirm_event(event)
+        else:
+            self._abort_snip()
+        return "break"
+
+    def on_key_press(self, event=None):
+        if event is None or self.confirmed:
+            return
+        if event.keysym in ("Return", "KP_Enter", "ISO_Enter") or getattr(event, "keycode", None) in (13, 108, 0x0D):
+            return self.on_enter_event(event)
+        if event.keysym in ("Escape",) or getattr(event, "keycode", None) == 27:
             return self.on_cancel_event(event)
 
     def on_cancel_event(self, event=None):
         if self.confirmed:
             return
-        # Annotation text editor uses Enter as newline.
-        if event is not None and self.current_text_entry:
-            keysym = getattr(event, "keysym", "")
-            if keysym in ("Return", "KP_Enter", "ISO_Enter") or getattr(event, "keycode", None) in (13, 108, 0x0D):
-                return
+        if self.current_text_entry:
+            self.cancel_text_entry()
+            return
+        if self.selected_text_index is not None:
+            self.selected_text_index = None
+            self.redraw_annotations()
+            return
         self._abort_snip()
         return "break"
 
@@ -1871,17 +1926,49 @@ class SniperOverlay:
             return
         try:
             import ctypes
-            hwnd = self.root.winfo_id()
             user32 = ctypes.windll.user32
-            user32.SetForegroundWindow(hwnd)
-            user32.SetFocus(hwnd)
-            ctypes.windll.imm32.ImmAssociateContext(hwnd, 0)
+            kernel32 = ctypes.windll.kernel32
+
+            # Release Alt key in case Alt+Q left Windows in modal menu state
+            user32.keybd_event(0x12, 0, 2, 0)
+
+            w_id = self.root.winfo_id()
+            top_hwnd = user32.GetAncestor(w_id, 2) or w_id
+
+            user32.AllowSetForegroundWindow(-1)
+            fg_hwnd = user32.GetForegroundWindow()
+            if fg_hwnd and fg_hwnd != top_hwnd:
+                fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
+                cur_thread = kernel32.GetCurrentThreadId()
+                if fg_thread != cur_thread:
+                    user32.AttachThreadInput(cur_thread, fg_thread, True)
+                    user32.BringWindowToTop(top_hwnd)
+                    user32.SetForegroundWindow(top_hwnd)
+                    user32.SetFocus(top_hwnd)
+                    user32.AttachThreadInput(cur_thread, fg_thread, False)
+                else:
+                    user32.BringWindowToTop(top_hwnd)
+                    user32.SetForegroundWindow(top_hwnd)
+                    user32.SetFocus(top_hwnd)
+            else:
+                user32.BringWindowToTop(top_hwnd)
+                user32.SetForegroundWindow(top_hwnd)
+                user32.SetFocus(top_hwnd)
+
+            ctypes.windll.imm32.ImmAssociateContext(top_hwnd, 0)
+            ctypes.windll.imm32.ImmAssociateContext(w_id, 0)
             canvas_hwnd = self.canvas.winfo_id()
             ctypes.windll.imm32.ImmAssociateContext(canvas_hwnd, 0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Focus overlay notice: {e}")
 
     def _close_overlay(self):
+        if getattr(self, "_global_listener", None):
+            try:
+                self._global_listener.stop()
+            except Exception:
+                pass
+            self._global_listener = None
         for after_id in self._focus_after_ids:
             try:
                 self.root.after_cancel(after_id)
