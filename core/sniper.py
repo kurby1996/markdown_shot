@@ -197,7 +197,6 @@ class SniperOverlay:
         self.lbl_size_val = None
         self.note_var = None
         self._focus_after_ids = []
-        self._global_listener = None
 
     def start(self):
         set_dpi_aware()
@@ -238,17 +237,24 @@ class SniperOverlay:
         for w in (self.root, self.canvas):
             w.bind("<Escape>", self.on_cancel_event)
             w.bind("<KeyPress-Escape>", self.on_cancel_event)
+            w.bind("<Alt-Escape>", self.on_cancel_event)
             w.bind("<Return>", self.on_enter_event)
             w.bind("<KP_Enter>", self.on_enter_event)
             w.bind("<KeyPress-Return>", self.on_enter_event)
             w.bind("<KeyPress-KP_Enter>", self.on_enter_event)
+            w.bind("<Alt-Return>", self.on_enter_event)
+            w.bind("<Alt-KP_Enter>", self.on_enter_event)
         self.root.bind_all("<Escape>", self.on_cancel_event)
         self.root.bind_all("<KeyPress-Escape>", self.on_cancel_event)
+        self.root.bind_all("<Alt-Escape>", self.on_cancel_event)
         self.root.bind_all("<Return>", self.on_enter_event)
         self.root.bind_all("<KP_Enter>", self.on_enter_event)
         self.root.bind_all("<KeyPress-Return>", self.on_enter_event)
         self.root.bind_all("<KeyPress-KP_Enter>", self.on_enter_event)
+        self.root.bind_all("<Alt-Return>", self.on_enter_event)
+        self.root.bind_all("<Alt-KP_Enter>", self.on_enter_event)
         self.root.bind_all("<KeyPress>", self.on_key_press)
+        self.canvas.bind("<KeyPress>", self.on_key_press)
         self.root.bind("<space>", self.on_space_event)
         self.root.bind("<Control-z>", lambda e: self.undo())
         self.root.bind("<Control-Z>", lambda e: self.undo())
@@ -278,44 +284,9 @@ class SniperOverlay:
         self._focus_overlay()
         self._focus_after_ids = [
             self.root.after(30, self._focus_overlay),
-            self.root.after(120, self._focus_overlay),
+            self.root.after(100, self._focus_overlay),
+            self.root.after(200, self._focus_overlay),
         ]
-
-        # Global key listener for Enter / Esc to guarantee response even if window lacks OS focus
-        try:
-            from pynput import keyboard as pynput_keyboard
-            def _on_global_key_press(key):
-                if self.confirmed:
-                    return
-                # If editing text annotation on canvas, don't hijack Enter
-                if self.current_text_entry:
-                    if key == pynput_keyboard.Key.esc or getattr(key, 'vk', None) == 27:
-                        try:
-                            self.root.after_idle(self.cancel_text_entry)
-                        except Exception:
-                            pass
-                    return
-
-                is_enter = (key == pynput_keyboard.Key.enter) or (getattr(key, 'vk', None) in (13, 108))
-                is_esc = (key == pynput_keyboard.Key.esc) or (getattr(key, 'vk', None) == 27)
-
-                if is_enter:
-                    try:
-                        self.root.after_idle(lambda: self.on_enter_event(None))
-                    except Exception:
-                        pass
-                elif is_esc:
-                    try:
-                        self.root.after_idle(lambda: self.on_cancel_event(None))
-                    except Exception:
-                        pass
-
-            self._global_listener = pynput_keyboard.Listener(on_press=_on_global_key_press)
-            self._global_listener.daemon = True
-            self._global_listener.start()
-        except Exception as e:
-            logger.warning(f"Could not start overlay global key listener: {e}")
-
         self.root.mainloop()
 
     def show_initial_hint(self, width, height):
@@ -1927,38 +1898,13 @@ class SniperOverlay:
         try:
             import ctypes
             user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-
-            # Release Alt key in case Alt+Q left Windows in modal menu state
+            # Dismiss any active Alt-menu in foreground window
             user32.keybd_event(0x12, 0, 2, 0)
 
             w_id = self.root.winfo_id()
             top_hwnd = user32.GetAncestor(w_id, 2) or w_id
-
-            user32.AllowSetForegroundWindow(-1)
-            fg_hwnd = user32.GetForegroundWindow()
-            if fg_hwnd and fg_hwnd != top_hwnd:
-                fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
-                cur_thread = kernel32.GetCurrentThreadId()
-                if fg_thread != cur_thread:
-                    user32.AttachThreadInput(cur_thread, fg_thread, True)
-                    user32.BringWindowToTop(top_hwnd)
-                    user32.SetForegroundWindow(top_hwnd)
-                    user32.SetFocus(top_hwnd)
-                    user32.AttachThreadInput(cur_thread, fg_thread, False)
-                else:
-                    user32.BringWindowToTop(top_hwnd)
-                    user32.SetForegroundWindow(top_hwnd)
-                    user32.SetFocus(top_hwnd)
-            else:
-                user32.BringWindowToTop(top_hwnd)
-                user32.SetForegroundWindow(top_hwnd)
-                user32.SetFocus(top_hwnd)
-
-            ctypes.windll.imm32.ImmAssociateContext(top_hwnd, 0)
-            ctypes.windll.imm32.ImmAssociateContext(w_id, 0)
-            canvas_hwnd = self.canvas.winfo_id()
-            ctypes.windll.imm32.ImmAssociateContext(canvas_hwnd, 0)
+            user32.BringWindowToTop(top_hwnd)
+            user32.SetForegroundWindow(top_hwnd)
         except Exception as e:
             logger.debug(f"Focus overlay notice: {e}")
 
@@ -1990,17 +1936,10 @@ class SniperOverlay:
         except Exception:
             pass
         try:
-            self.root.destroy()
+            if self.root:
+                self.root.destroy()
         except Exception:
             pass
-        self._restore_global_hotkeys()
-
-    def _restore_global_hotkeys(self):
-        try:
-            from core.hotkey_manager import hotkey_manager
-            hotkey_manager.restart_listener()
-        except Exception as e:
-            logger.warning(f"Failed to restore hotkeys after snip: {e}")
 
     def _abort_snip(self):
         if self.confirmed:
